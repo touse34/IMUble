@@ -1,75 +1,191 @@
-/*
- * Copyright (c) 2016 Intel Corporation
- *
- * SPDX-License-Identifier: Apache-2.0
- */
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 
-#include <stdio.h>
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/sys/printk.h>
 
-/* 1000 msec = 1 sec */
-#define SLEEP_TIME_MS   1000
-// 定义一个名为 SLEEP_TIME_MS 的宏常量，其值为 1000。注释说明了这是 1000 毫秒，即 1 秒。这个常量用于控制 LED 闪烁的频率（亮多久，灭多久）。
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR))};
 
+static const struct bt_data sd[] = {
+    BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1)};
+
+static ATOMIC_DEFINE(state, 2U);
+
+#define STATE_CONNECTED 1U
+
+#define STATE_DISCONNECTED 2U
+
+static void connected(struct bt_conn *conn, uint8_t err)
+{
+        if (err)
+        {
+
+                // 如果有错误，打印连接失败信息，包括错误码和错误描述
+
+                printk("Connection failed, err 0x%02x %s\n", err, bt_hci_err_to_str(err));
+        }
+        else
+        {
+
+                // 没错误，打印连接成功！！
+
+                printk("Connected\n");
+
+                // 使用原子操作安全地设置 state 变量的 STATE_CONNECTED 位（第一位），设置值为1
+                (void)atomic_set_bit(state, STATE_CONNECTED);
+        }
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+        // 打印连接断开信息，包括断开原因代码和原因描述
+        printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
+
+        // 使用原子操作安全地设置 state 变量的 STATE_DISCONNECTED 位（第二位），设置值为1
+        (void)atomic_set_bit(state, STATE_DISCONNECTED);
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+    .connected = connected,
+    .disconnected = disconnected,
+};
+
+#if defined(CONFIG_GPIO) // 检查kconfig中是否启用GPIO功能
 /* The devicetree node identifier for the "led0" alias. */
-#define LED0_NODE DT_ALIAS(led0)
-// 定义一个名为 LED0_NODE 的宏。DT_ALIAS(led0) 是 Zephyr 提供的一个特殊宏，用于从“设备树 (Devicetree)”中查找名为 "led0" 的别名 (alias)。设备树是一种描述硬件连接方式的文件（.dts, .overlay）。开发板的设备树文件会定义好哪个物理 LED 被赋予了 "led0" 这个别名。这个宏使得代码可以用统一的逻辑名称 ("led0") 来引用硬件，而无需硬编码具体的引脚号，提高了代码的可移植性。
+#define LED0_NODE DT_ALIAS(led0) // 获取 "led0" 别名对应的设备树节点
 
-/*
- * A build error on this line means your board is unsupported.
- * See the sample documentation for information on how to fix this.
- */
-// 这一行是获取 LED 硬件信息的关键步骤。
-// static const struct gpio_dt_spec led: 声明一个名为 led 的变量。
-//   - static: 表示这个变量只在当前文件内可见。
-//   - const: 表示这个变量的值在初始化后不能被修改。
-//   - struct gpio_dt_spec: 这是 Zephyr 定义的一个结构体类型，专门用来存储从设备树获取到的 GPIO 引脚的完整信息（包括它属于哪个 GPIO 控制器、具体的引脚编号、引脚的特性标志等）。
-// GPIO_DT_SPEC_GET(LED0_NODE, gpios): 这是另一个 Zephyr 提供的宏，用于根据设备树节点信息来初始化 gpio_dt_spec 结构体。
-//   - LED0_NODE: 我们之前定义的宏，指向设备树中 "led0" 别名对应的节点。
-//   - gpios: 指定我们要获取的是该节点下的 "gpios" 属性（这个属性包含了引脚号、标志等信息）。
-// 整个语句的作用就是：根据设备树中 "led0" 的定义，创建一个名为 led 的、包含了控制该 LED 所需全部硬件信息的结构体变量。
-// 注释警告：如果你的开发板的设备树文件里没有定义 "led0" 这个别名，或者定义不正确，编译时就会在这行报错。
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+#if DT_NODE_HAS_STATUS_OKAY(LED0_NODE)                                     // 判断Led0这个设备是否可用
+#include <zephyr/drivers/gpio.h>                                           // 包含 GPIO 驱动头文件
+#define HAS_LED 1                                                          // 定义一个宏，表示存在可用的 LED
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios); // 获取 led0 的具体硬件信息
+#define BLINK_ONOFF K_MSEC(500)                                            // 定义闪烁间隔为 500 毫秒
 
+static struct k_work_delayable blink_work; // 定义一个延时工作项变量
+static bool led_is_on;                     // 追踪 LED 状态
 
+static void blink_timeout(struct k_work *work) // 实际执行闪烁逻辑的回调函数 不断调度自己
+{
+        led_is_on = !led_is_on;
+        gpio_pin_set(led.port, led.pin, (int)led_is_on); // 切换电平
+
+        k_work_schedule(&blink_work, BLINK_ONOFF); // 请在 500 毫秒之后，把与 blink_work 相关联的那个函数 (blink_timeout) 交给一个后台工作线程去执行。
+}
+
+static int blink_setup(void)
+{
+        int err;
+
+        // 检查设备是否就绪
+        printk("Checking LED device...");
+        if (!gpio_is_ready_dt(&led))
+        {
+                printk("failed.\n");
+                return -EIO; // 打印I/O错误码
+        }
+        printk("done.\n");
+
+        // 设置引脚
+        printk("Configuring GPIO pin...");
+        err = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE); // 把led变量代表的引脚设为输出模式
+        if (err)
+        {
+                printk("failed.\n");
+                return -EIO;
+        }
+        printk("done.\n");
+
+        k_work_init_delayable(&blink_work, blink_timeout); // 把待办事项和具体内容关联起来
+
+        return 0;
+}
+
+static void blink_start(void)
+{
+        printk("Start blinking LED...\n");
+        led_is_on = false;
+        gpio_pin_set(led.port, led.pin, (int)led_is_on); // 初始电平设置为低，灯不亮
+        k_work_schedule(&blink_work, BLINK_ONOFF);       // 请在 500 毫秒之后，把与 blink_work 相关联的那个函数 (blink_timeout) 交给一个后台工作线程去执行。
+}
+
+static void blink_stop(void)
+{
+        struct k_work_sync work_sync;
+
+        printk("Stop blinking LED.\n");
+        k_work_cancel_delayable_sync(&blink_work, &work_sync); // 取消尚未执行的调度
+
+        /* Keep LED on */
+        led_is_on = true;
+        gpio_pin_set(led.port, led.pin, (int)led_is_on); // 停止后，保持 LED 为常亮状态
+}
+#endif /* LED0_NODE */
+#endif /* CONFIG_GPIO */
 
 int main(void)
 {
-	int ret; // 定义一个整型变量 ret (return code)，用于存储 Zephyr API 函数的返回值。按照惯例，返回 0 通常表示成功，返回负数表示发生了错误。
-	bool led_state = true; // 定义一个布尔型变量 led_state，用于在逻辑上跟踪 LED 的状态（亮或灭）。这里初始化为 true，假设初始状态为亮。
+        int err;
+        err = bt_enable(NULL);
+        if (err)
+        {
+                printk("Bluetooth init failed (err %d)\n", err); // 如果初始化失败打印错误信息
+                return 0;                                        // 蓝牙无法启动，程序退出
+        }
 
-	// 调用 gpio_is_ready_dt 函数，检查与 led 变量关联的 GPIO 设备是否已经初始化并且可以使用。
-    // 需要传入 led 变量的地址 (&led)
-	if (!gpio_is_ready_dt(&led)) {
-		return 0;	//如果没准备好，返回0并退出
-	}
+        printk("Bluetooth initialized\n");
 
-	// 调用 gpio_pin_configure_dt 函数，将 led 变量所代表的 GPIO 引脚配置为输出模式。
-    // GPIO_OUTPUT_ACTIVE 是一个标志，表示配置为输出，并且当引脚设置为“活动”(Active) 电平时 LED 会亮（具体是高电平还是低电平取决于设备树中的配置）。
-	ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
-	if (ret < 0) {	// 检查返回值。如果配置失败，函数会返回一个负数错误码。
-		return 0;	// 如果配置失败，也退出程序。
-	}
+        err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+        if (err)
+        {
+                printk("Advertising failed to start (err %d)\n", err);
+                return 0;
+        }
+        printk("Advertising successfully started\n");
 
-	// 进入一个无限循环。嵌入式程序的核心逻辑通常在一个不会退出的循环中运行，以持续执行任务。
-	while (1) {
-		// 调用 gpio_pin_toggle_dt 函数，切换 led 引脚的当前电平状态。
-        // 如果引脚当前是高电平，则变为低电平；如果是低电平，则变为高电平。从而实现 LED 的亮灭切换。
-		ret = gpio_pin_toggle_dt(&led);
-		if (ret < 0) { //检查切换是否成功
-			return 0;
-		}
+#if defined(HAS_LED) // 预处理器检查：仅当通过设备树找到了可用的 LED ("led0") 并且 GPIO 功能已启用时，才执行此代码块。（上文中两个#IF）
 
-		// 更新逻辑状态变量的值（取反）。
-        // 调用 printf 函数，将 LED 的当前逻辑状态 ("ON" 或 "OFF") 打印到控制台。
-        // led_state ? "ON" : "OFF" 是一个三元运算符，如果 led_state 为 true，则输出 "ON"，否则输出 "OFF"。
-        // \n 表示换行。
-		led_state = !led_state;
-		printf("LED state: %s\n", led_state ? "ON" : "OFF");
-		k_msleep(SLEEP_TIME_MS);
-	}
-	// 因为上面的 while(1) 是一个无限循环，所以程序理论上永远不会执行到这一行。
-	return 0;
+        // 调用 blink_setup() 函数，初始化 LED 相关的 GPIO 引脚，并设置好延时工作项
+        err = blink_setup();
+        if (err)
+        {
+                return 0;
+        }
+
+        // 调用 blink_start() 函数，开始使用工作队列进行非阻塞的 LED 闪烁，表示设备正在等待连接
+        blink_start();
+
+#endif /* HAS_LED */
+
+        while (1)
+        {
+                k_sleep(K_MSEC(500)); // 暂停 500 毫秒，给其他任务运行时间
+
+                if (atomic_test_and_clear_bit(state, STATE_CONNECTED))
+                {
+
+                        /* Connected callback executed */
+
+                        blink_stop(); // 停止闪灯，改为常亮
+                }
+                else if (atomic_test_and_clear_bit(state, STATE_DISCONNECTED))
+                { // 每秒轮询检查连接是否断开	// 重新启动传统广播
+                        printk("Starting Legacy Advertising (connectable and scannable)\n");
+                        err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd,
+                                              ARRAY_SIZE(sd));
+                        if (err)
+                        {
+                                printk("Advertising failed to start (err %d)\n", err);
+                                return 0;
+                        }
+
+                        blink_start();
+
+                        return 0;
+                }
+        }
+        return 0;
 }
-
