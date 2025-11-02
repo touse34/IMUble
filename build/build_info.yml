@@ -1,0 +1,5 @@
+west:
+  command: C:\Users\86135\AppData\Local\Programs\Python\Python312\Scripts\west build
+    -b seeed_xiao_nrf52840_sense
+  topdir: C:\ncs\v3.1.1
+  version: 1.5.0

@@ -1,0 +1,16 @@
+/ {
+    soc {
+        i2c0: i2c@40003000 {
+            compatible = "nordic,nrf-twim";
+            status = "okay";
+            clock-frequency = <I2C_BITRATE_FAST>;
+
+            lsm6ds3: lsm6ds3@6a {
+                compatible = "st,lsm6ds3";
+                reg = <0x6a>;
+                label = "LSM6DS3";
+                status = "okay";
+            };
+        };
+    };
+};
