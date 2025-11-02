@@ -3,13 +3,13 @@
 #include <zephyr/drivers/sensor.h>
 #include <stdio.h>
 
-void main(void)
+int main()
 {
-    const struct device *sensor = DEVICE_DT_GET_ONE(st_lsm6ds3);
+    const struct device *sensor = DEVICE_DT_GET_ONE(st_lsm6dsl);
     
     if (!device_is_ready(sensor)) {
         printf("错误: IMU传感器未就绪\n");
-        return;
+        return 0;
     }
     
     printf("IMU传感器初始化成功\n");
@@ -33,4 +33,6 @@ void main(void)
         
         k_sleep(K_MSEC(500));
     }
+
+    return 0;
 }
