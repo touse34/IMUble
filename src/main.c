@@ -2,11 +2,19 @@
 #include <zephyr/devicetree.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/drivers/sensor.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/printk.h>
+
+static int print_samples;
+static int lsm6dsl_trig_cnt;
+
+//初始化结构体
+static struct sensor_value accel_x_out, accel_y_out, accel_z_out;
+static struct sensor_value gyro_x_out, gyro_y_out, gyro_z_out;
 
 // 标记手机是否开启了通知
 static bool imu_ntf_enabled;
@@ -106,7 +114,38 @@ static void imu_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
     printk("IMU notification status changed: %s\n", imu_ntf_enabled ? "enabled" : "disabled");
 }
 
+static void lsm6dsl_trigger_handler(const struct device *dev,
+				    const struct sensor_trigger *trig)
+{
+    static struct sensor_value accel_x, accel_y, accel_z;
+	static struct sensor_value gyro_x, gyro_y, gyro_z;
 
+    lsm6dsl_trig_cnt++;
+
+    //获取最新读数并且放入变量里
+    sensor_sample_fetch_chan(dev, SENSOR_CHAN_ACCEL_XYZ);
+    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_X, &accel_x);
+    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_Y, &accel_y);
+	sensor_channel_get(dev, SENSOR_CHAN_ACCEL_Z, &accel_z);
+
+	/* lsm6dsl gyro */
+	sensor_sample_fetch_chan(dev, SENSOR_CHAN_GYRO_XYZ);
+	sensor_channel_get(dev, SENSOR_CHAN_GYRO_X, &gyro_x);
+	sensor_channel_get(dev, SENSOR_CHAN_GYRO_Y, &gyro_y);
+	sensor_channel_get(dev, SENSOR_CHAN_GYRO_Z, &gyro_z);
+
+    if(print_samples) {
+        print_samples = 0;
+
+		accel_x_out = accel_x;
+		accel_y_out = accel_y;
+		accel_z_out = accel_z;
+
+		gyro_x_out = gyro_x;
+		gyro_y_out = gyro_y;
+		gyro_z_out = gyro_z;
+    }
+}
 
 
 
