@@ -8,8 +8,49 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/printk.h>
 
+// 标记手机是否开启了通知
+static bool imu_ntf_enabled;
+
+static void imu_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+/* Service UUID: ac53c60f-179a-40f9-a1e1-abe320dc8e41 */
+
+/* Characteristic UUID: 3631478e-0a3a-4ccc-8f37-76b12db44564 */
+
+#define BT_UUID_IMU_SERVICE    BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0xac53c60f, 0x179a, 0x40f9, 0xa1e1, 0xabe320dc8e41))
+#define BT_UUID_IMU_DATA_CHAR       BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x3631478e, 0x0a3a, 0x4ccc, 0x8f37, 0x76b12db44564))
+
+//定义GATT服务
+BT_GATT_SERVICE_DEFINE(imu_svc,
+
+    BT_GATT_PRIMARY_SERVICE(BT_UUID_IMU_SERVICE),
+
+    BT_GATT_CHARACTERISTIC(
+        BT_UUID_IMU_DATA_CHAR,   // 特征的 UUID
+        BT_GATT_CHRC_NOTIFY,    //特征的属性：通知
+        BT_GATT_PERM_NONE,       //权限：无
+        NULL,                   //读回调，不开read功能
+        NULL,                   //写回调，不开write功能
+        NULL                    //给上面两个函数传参，无
+    ),
+
+
+    BT_GATT_CCC(//CCC通知开关
+        imu_ccc_cfg_changed,
+        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE  //手机 App 必须有权读写这个 CCC 描述符
+    )
+);
+
+
+
+
+
 static const struct bt_data ad[] = {
-    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR))};
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA_BYTES(BT_DATA_UUID128_ALL,
+                BT_UUID_128_ENCODE(0xac53c60f, 0x179a, 0x40f9, 0xa1e1, 0xabe320dc8e41)
+    )
+};
 
 static const struct bt_data sd[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1)};
@@ -54,6 +95,18 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
 };
+
+static void imu_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    // 检查写入的值是启用通知 (0x0001) 还是禁用 (0x0000)
+    imu_ntf_enabled = (value == BT_GATT_CCC_NOTIFY);
+
+    printk("IMU notification status changed: %s\n", imu_ntf_enabled ? "enabled" : "disabled");
+}
+
+
+
+
 
 #if defined(CONFIG_GPIO) // 检查kconfig中是否启用GPIO功能
 /* The devicetree node identifier for the "led0" alias. */
