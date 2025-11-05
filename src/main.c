@@ -11,8 +11,35 @@ int main()
         printf("错误: IMU传感器未就绪\n");
         return 0;
     }
-    
+
+
+
+
     printf("IMU传感器初始化成功\n");
+
+    /* --- 新增代码开始 --- */
+    struct sensor_value odr_attr;
+
+    /* 设置加速度计和陀螺仪的采样频率为 104 Hz */
+    odr_attr.val1 = 104; // 104 Hz
+    odr_attr.val2 = 0;   // 0 小数部分
+
+    // 设置加速度计的采样频率
+    if (sensor_attr_set(sensor, SENSOR_CHAN_ACCEL_XYZ,
+                       SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
+        printf("无法设置加速度计的采样频率\n");
+        return 0;
+    }
+    printf("加速度计采样频率设置为 104 Hz\n");
+
+    // 设置陀螺仪的采样频率 (P26 项目也需要陀螺仪)
+    if (sensor_attr_set(sensor, SENSOR_CHAN_GYRO_XYZ,
+                       SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
+        printf("无法设置陀螺仪的采样频率\n");
+        return 0;
+    }
+    printf("陀螺仪采样频率设置为 104 Hz\n");
+    /* --- 新增代码结束 --- */
     
     while (1) {
         struct sensor_value accel[3];
