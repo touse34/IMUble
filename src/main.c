@@ -34,6 +34,8 @@ BT_GATT_SERVICE_DEFINE(imu_svc,
         NULL                    //给上面两个函数传参，无
     ),
 
+    BT_GATT_CUD("IMU Data", BT_GATT_PERM_READ),
+
 
     BT_GATT_CCC(//CCC通知开关
         imu_ccc_cfg_changed,
