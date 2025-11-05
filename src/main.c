@@ -237,7 +237,6 @@ int main(void)
 
                         blink_start();
 
-                        return 0;
                 }
         }
         return 0;
