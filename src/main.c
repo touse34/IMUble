@@ -35,14 +35,14 @@ static K_WORK_DELAYABLE_DEFINE(producer_work, consumer_work_handler);
 
 
 
-// 负责从 k_queue 中取出所有样本，打包，然后发送
+// 从 k_queue 中取出所有样本，打包、发送
 void consumer_work_handler(struct k_work *work)
 {
     struct imu_sample *sample_ptr;
     int samples_count = 0;
     double ideal_samples = (double)SAMPLE_FREQUENCY * CONSUMER_RATE_MS / 1000.0;
 
-    printf("\n[Consumer] === 开始批量传输 (20 Hz) ===\n");
+    printf("\n[Consumer] === 开始批量传输 ===\n");
 
     // 从队列中取出所有积攒的样本
     while ((sample_ptr = k_queue_get(&imu_data_queue, K_NO_WAIT)) != NULL) {
@@ -62,7 +62,7 @@ void consumer_work_handler(struct k_work *work)
         printf("[Consumer] 成功打包并释放 %d 个样本。理想样本数: %.1f\n", 
                samples_count, ideal_samples);
     } else {
-        printf("[Consumer] 警告：队列为空，没有样本可发送。\n");
+        printf("[Consumer] 队列为空，没有样本可发送。\n");
     }
 
     // 重新启动延迟工作项 (20 Hz 周期性运行)
@@ -85,7 +85,7 @@ static void sensor_trigger_handler(const struct device *dev,
     // 分配内存给新的样本
     new_sample = k_malloc(sizeof(struct imu_sample));
     if (new_sample == NULL) {
-        printk("[Producer] 内存分配失败，样本丢失!\n");
+        printk("[Producer] 内存分配失败，样本丢失\n");
         return;
     }
 
@@ -97,7 +97,7 @@ static void sensor_trigger_handler(const struct device *dev,
     sensor_channel_get(dev, SENSOR_CHAN_GYRO_Y, &new_sample->gyro[1]);
     sensor_channel_get(dev, SENSOR_CHAN_GYRO_Z, &new_sample->gyro[2]);
 
-    //  将样本推入队列 (作为生产者)
+    //  将样本推入队列
     k_queue_put(&imu_data_queue, new_sample);
 
     printk("[Producer] 样本推入队列: Accel Z=%.2f\n", 
@@ -154,10 +154,10 @@ int main()
         printf("[Main] 无法设置传感器触发器\n");
         return 0;
     }  
-    printf("[Main] 传感器线程已启动！\n");
+    printf("[Main] 传感器线程已启动\n");
 
 
-    // 启动延迟工作项 (消费者)
+    // 启动延迟工作项
     // 立即启动第一次运行，之后它会在 consumer_work_handler 中自己每 50 ms 重新调度
     k_work_reschedule(&producer_work, K_MSEC(CONSUMER_RATE_MS));
     printf("[Main] 延迟工作项 (消费者, %d ms) 已启动。\n", CONSUMER_RATE_MS);
