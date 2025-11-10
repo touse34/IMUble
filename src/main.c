@@ -25,7 +25,7 @@ struct imu_sample {
 const struct device *sensor = DEVICE_DT_GET_ONE(st_lsm6dsl);
 
 // 消息队列：用于传感器 ISR (中断服务程序) 和工作项 (延迟发送) 之间传输数据
-K_QUEUE_DEFINE(imu_data_queue);
+K_FIFO_DEFINE(imu_data_fifo);
 
 void consumer_work_handler(struct k_work *work);
 
@@ -45,7 +45,7 @@ void consumer_work_handler(struct k_work *work)
     printf("\n[Consumer] === 开始批量传输 ===\n");
 
     // 从队列中取出所有积攒的样本
-    while ((sample_ptr = k_queue_get(&imu_data_queue, K_NO_WAIT)) != NULL) {
+    while ((sample_ptr = k_fifo_get(&imu_data_fifo, K_NO_WAIT)) != NULL) {
         samples_count++;
         
         // 在这里进行数据打包/复制到发送缓冲区
@@ -98,7 +98,7 @@ static void sensor_trigger_handler(const struct device *dev,
     sensor_channel_get(dev, SENSOR_CHAN_GYRO_Z, &new_sample->gyro[2]);
 
     //  将样本推入队列
-    k_queue_put(&imu_data_queue, new_sample);
+    k_fifo_put(&imu_data_fifo, new_sample);
 
     printk("[Producer] 样本推入队列: Accel Z=%.2f\n", 
            sensor_value_to_double(&new_sample->accel[2]));
