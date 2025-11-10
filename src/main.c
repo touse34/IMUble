@@ -2,69 +2,112 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/sensor.h>
 #include <stdio.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/types.h>
+#include <zephyr/sys/slist.h>
 
 
 // ========== 线程定义和全局变量 ==========
-#define STACKSIZE 1024       // 新线程的堆栈大小
-#define PRIORITY 7           // 新线程的优先级（数字越低，优先级越高）
+#define SAMPLE_FREQUENCY 104    // 传感器采样频率 (Hz)
+#define CONSUMER_RATE_MS 50     // 消费者 (发送) 频率 (ms) -> 20 Hz
 
-// 定义堆栈空间：静态分配内存给新线程
-K_THREAD_STACK_DEFINE(imu_sensor_stack, STACKSIZE);
-// 声明线程结构体对象：内核用于管理此线程
-struct k_thread imu_sensor_thread;
+
+// 传感器数据结构体：用于存储单个样本，推入 k_queue
+struct imu_sample {
+    sys_snode_t node; // k_queue 需要的节点
+    struct sensor_value accel[3];
+    struct sensor_value gyro[3];
+};
+
 
 // 全局传感器设备指针：方便主线程和传感器线程共享访问
 const struct device *sensor = DEVICE_DT_GET_ONE(st_lsm6dsl);
 
+// 消息队列：用于传感器 ISR (中断服务程序) 和工作项 (延迟发送) 之间传输数据
+K_QUEUE_DEFINE(imu_data_queue);
+
+void consumer_work_handler(struct k_work *work);
+
+// 延迟工作项：用于周期性地处理队列并发送数据
+static K_WORK_DELAYABLE_DEFINE(producer_work, consumer_work_handler); 
 
 
 
-// ========== 新的传感器线程入口函数 ==========
-// 负责周期性地获取 IMU 数据
-void imu_sensor_entry(void *p1, void *p2, void *p3)
+
+// 负责从 k_queue 中取出所有样本，打包，然后发送
+void consumer_work_handler(struct k_work *work)
 {
-    // 传感器任务的主循环
-    while (1) {
-        struct sensor_value accel[3];
-        struct sensor_value gyro[3];
+    struct imu_sample *sample_ptr;
+    int samples_count = 0;
+    double ideal_samples = (double)SAMPLE_FREQUENCY * CONSUMER_RATE_MS / 1000.0;
 
-        // 1. 从传感器硬件获取样本数据
-        if (sensor_sample_fetch(sensor) < 0) {
-            printf("[Task] 传感器数据获取失败\n");
-            k_msleep(100);
-            continue;
-        }
+    printf("\n[Consumer] === 开始批量传输 (20 Hz) ===\n");
+
+    // 从队列中取出所有积攒的样本
+    while ((sample_ptr = k_queue_get(&imu_data_queue, K_NO_WAIT)) != NULL) {
+        samples_count++;
         
-        // 2. 从驱动程序获取加速度计数据
-        sensor_channel_get(sensor, SENSOR_CHAN_ACCEL_X, &accel[0]);
-        sensor_channel_get(sensor, SENSOR_CHAN_ACCEL_Y, &accel[1]);
-        sensor_channel_get(sensor, SENSOR_CHAN_ACCEL_Z, &accel[2]);
+        // 在这里进行数据打包/复制到发送缓冲区
+        printf("[Consumer] 样本 %d: Accel X=%.2f m/s², Gyro Z=%.2f °/s\n", samples_count,
+               sensor_value_to_double(&sample_ptr->accel[0]),
+               sensor_value_to_double(&sample_ptr->gyro[2]));
 
-        // 3. 从驱动程序获取陀螺仪数据（计算角速度）
-        sensor_channel_get(sensor, SENSOR_CHAN_GYRO_X, &gyro[0]);
-        sensor_channel_get(sensor, SENSOR_CHAN_GYRO_Y, &gyro[1]);
-        sensor_channel_get(sensor, SENSOR_CHAN_GYRO_Z, &gyro[2]);
-        
-        // 4. print
-        printf("[Task] 加速度: X=%.2f, Y=%.2f, Z=%.2f m/s²\n",
-               sensor_value_to_double(&accel[0]),
-               sensor_value_to_double(&accel[1]),
-               sensor_value_to_double(&accel[2]));
-
-        printf("[Task] 陀螺仪: X=%.2f, Y=%.2f, Z=%.2f °/s\n",
-               sensor_value_to_double(&gyro[0]),
-               sensor_value_to_double(&gyro[1]),
-               sensor_value_to_double(&gyro[2]));
-
-        // 5. 让出 CPU：线程休眠 500 毫秒，等待下一次运行
-        k_sleep(K_MSEC(500));
+        // 释放内存
+        k_free(sample_ptr);
     }
+    
+    // 检查并报告
+    if (samples_count > 0) {
+        printf("[Consumer] 成功打包并释放 %d 个样本。理想样本数: %.1f\n", 
+               samples_count, ideal_samples);
+    } else {
+        printf("[Consumer] 警告：队列为空，没有样本可发送。\n");
+    }
+
+    // 重新启动延迟工作项 (20 Hz 周期性运行)
+    k_work_reschedule(&producer_work, K_MSEC(CONSUMER_RATE_MS));
+}
+
+
+// 生产者：传感器触发器回调函数 (104 Hz)
+static void sensor_trigger_handler(const struct device *dev,
+                                 const struct sensor_trigger *trigger)
+{
+    struct imu_sample *new_sample;
+
+    // 获取数据
+    if (sensor_sample_fetch(dev) < 0) {
+        printk("[Producer] 传感器数据获取失败\n");
+        return;
+    }
+
+    // 分配内存给新的样本
+    new_sample = k_malloc(sizeof(struct imu_sample));
+    if (new_sample == NULL) {
+        printk("[Producer] 内存分配失败，样本丢失!\n");
+        return;
+    }
+
+    // 从驱动程序获取数据
+    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_X, &new_sample->accel[0]);
+    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_Y, &new_sample->accel[1]);
+    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_Z, &new_sample->accel[2]);
+    sensor_channel_get(dev, SENSOR_CHAN_GYRO_X, &new_sample->gyro[0]);
+    sensor_channel_get(dev, SENSOR_CHAN_GYRO_Y, &new_sample->gyro[1]);
+    sensor_channel_get(dev, SENSOR_CHAN_GYRO_Z, &new_sample->gyro[2]);
+
+    //  将样本推入队列 (作为生产者)
+    k_queue_put(&imu_data_queue, new_sample);
+
+    printk("[Producer] 样本推入队列: Accel Z=%.2f\n", 
+           sensor_value_to_double(&new_sample->accel[2]));
 }
 
 
 
 
-// ========== 主线程函数 (main) ==========
+// main函数
 int main()
 {
     
@@ -73,15 +116,13 @@ int main()
         return 0;
     }
 
-
-
     printf("[Main] IMU传感器初始化成功\n");
 
     /* --- 新增代码开始 --- */
     struct sensor_value odr_attr;
 
     /* 设置加速度计和陀螺仪的采样频率为 104 Hz */
-    odr_attr.val1 = 104; // 104 Hz
+    odr_attr.val1 = SAMPLE_FREQUENCY; // 104 Hz
     odr_attr.val2 = 0;   // 0 小数部分
 
     // 设置加速度计的采样频率
@@ -101,25 +142,31 @@ int main()
     printf("[Main] 陀螺仪采样频率设置为 104 Hz\n");
     /* --- 新增代码结束 --- */
     
-    
+    /* --- 配置和启用传感器触发器 (生产者) --- */
+    struct sensor_trigger trig = {
+        .type = SENSOR_TRIG_DATA_READY, // 数据就绪触发
+        .chan = SENSOR_CHAN_ALL,
+    };
     
 
-    // 启动新的传感器线程
-    k_thread_create(&imu_sensor_thread,      // 线程对象
-                    imu_sensor_stack,        // 堆栈空间
-                    STACKSIZE,               // 堆栈大小
-                    imu_sensor_entry,        // 线程入口函数
-                    NULL, NULL, NULL,        // 传递给线程函数的参数
-                    PRIORITY,                // 优先级
-                    0,                       // 选项 flags
-                    K_NO_WAIT);              // 启动后立即运行
-                    
+   // 绑定触发器和回调函数
+    if (sensor_trigger_set(sensor, &trig, sensor_trigger_handler) < 0) {
+        printf("[Main] 无法设置传感器触发器\n");
+        return 0;
+    }  
     printf("[Main] 传感器线程已启动！\n");
 
-    // 主线程进入低频空闲循环（可以被其他高优先级线程抢占）
+
+    // 启动延迟工作项 (消费者)
+    // 立即启动第一次运行，之后它会在 consumer_work_handler 中自己每 50 ms 重新调度
+    k_work_reschedule(&producer_work, K_MSEC(CONSUMER_RATE_MS));
+    printf("[Main] 延迟工作项 (消费者, %d ms) 已启动。\n", CONSUMER_RATE_MS);
+
+
+    // 主线程进入低频空闲循环
     while (1) {
         printf("[Main] 主线程空闲...\n");
-        k_sleep(K_MSEC(3000)); // 每 3 秒打印一次
+        k_sleep(K_MSEC(3000)); 
     }
 
     return 0;
