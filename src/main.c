@@ -13,9 +13,9 @@
 #define CONSUMER_RATE_MS 50     // 消费者 (发送) 频率 (ms) -> 20 Hz
 
 
-// 传感器数据结构体：用于存储单个样本，推入 k_queue
+// 传感器数据结构体：用于存储单个样本，推入 k_fifo
 struct imu_sample {
-    sys_snode_t node; // k_queue 需要的节点
+    sys_snode_t node; // k_fifo 需要的节点
     struct sensor_value accel[3];
     struct sensor_value gyro[3];
 };
@@ -35,7 +35,7 @@ static K_WORK_DELAYABLE_DEFINE(producer_work, consumer_work_handler);
 
 
 
-// 从 k_queue 中取出所有样本，打包、发送
+// 从 k_fifo 中取出所有样本，打包、发送
 void consumer_work_handler(struct k_work *work)
 {
     struct imu_sample *sample_ptr;
