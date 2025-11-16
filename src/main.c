@@ -6,6 +6,43 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/types.h>
 #include <zephyr/sys/slist.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/gatt.h>
+
+
+
+/* 自定义 UUID */
+#define BT_UUID_IMU_SERVICE_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x1234567890ab)
+
+#define BT_UUID_IMU_CHAR_VAL \
+    BT_UUID_128_ENCODE(0x12345679, 0x1234, 0x5678, 0x1234, 0x1234567890ab)
+
+static struct bt_uuid_128 imu_svc_uuid = BT_UUID_INIT_128(BT_UUID_IMU_SERVICE_VAL);
+static struct bt_uuid_128 imu_char_uuid = BT_UUID_INIT_128(BT_UUID_IMU_CHAR_VAL);
+
+/* 用来临时放要通知出去的数据 */
+static uint8_t imu_notify_data[12];
+
+static void imu_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    printk("IMU notify %s\n", notif_enabled ? "enabled" : "disabled");
+}
+
+/* 声明 GATT 服务：一个 Primary Service + 一个支持 notify 的特征 */
+BT_GATT_SERVICE_DEFINE(imu_svc,
+    BT_GATT_PRIMARY_SERVICE(&imu_svc_uuid),
+    BT_GATT_CHARACTERISTIC(&imu_char_uuid.uuid,
+        BT_GATT_CHRC_NOTIFY,
+        BT_GATT_PERM_NONE,
+        NULL, NULL, imu_notify_data),
+    BT_GATT_CCC(imu_ccc_cfg_changed,
+        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+);
+
+
 
 
 // ========== 线程定义和全局变量 ==========
@@ -52,6 +89,20 @@ void consumer_work_handler(struct k_work *work)
         printf("[Consumer] 样本 %d: Accel X=%.2f m/s², Gyro Z=%.2f °/s\n", samples_count,
                sensor_value_to_double(&sample_ptr->accel[0]),
                sensor_value_to_double(&sample_ptr->gyro[2]));
+
+               
+               /* --- 新增：把 accel 三轴打包成 3 个 float（12 字节） --- */
+        float ax = (float)sensor_value_to_double(&sample_ptr->accel[0]);
+        float ay = (float)sensor_value_to_double(&sample_ptr->accel[1]);
+        float az = (float)sensor_value_to_double(&sample_ptr->accel[2]);
+
+        memcpy(&imu_notify_data[0], &ax, sizeof(float));
+        memcpy(&imu_notify_data[4], &ay, sizeof(float));
+        memcpy(&imu_notify_data[8], &az, sizeof(float));
+
+        /* 通过 GATT Notify 发出去（属性索引 1 对应上面特征） */
+        bt_gatt_notify(NULL, &imu_svc.attrs[1], imu_notify_data, sizeof(imu_notify_data));
+
 
         // 释放内存
         k_free(sample_ptr);
@@ -105,12 +156,38 @@ static void sensor_trigger_handler(const struct device *dev,
 }
 
 
+/* 蓝牙初始化完成后的回调 */
+static void bt_ready(int err)
+{
+    if (err) {
+        printk("[BT] Bluetooth init failed (err %d)\n", err);
+        return;
+    }
+
+    printk("[BT] Bluetooth ready, start advertising\n");
+
+    /* 开始广播，允许连接，并带上设备名 */
+    err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, NULL, 0, NULL, 0);
+    if (err) {
+        printk("[BT] Advertising failed to start (err %d)\n", err);
+    }
+}
+
+
 
 
 // main函数
 int main()
 {
-    
+    int err;
+
+    /* 1. 初始化蓝牙 */
+    err = bt_enable(bt_ready);
+    if (err) {
+        printk("[BT] Bluetooth enable failed (err %d)\n", err);
+    }
+
+
     if (!device_is_ready(sensor)) {
         printf("[Main] 错误: IMU传感器未就绪\n");
         return 0;
