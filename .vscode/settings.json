@@ -2,6 +2,11 @@
     "files.associations": {
         "stdio.h": "c",
         "gpio.h": "c",
-        "device.h": "c"
+        "device.h": "c",
+        "bluetooth.h": "c",
+        "conn.h": "c",
+        "kernel.h": "c",
+        "sensor.h": "c",
+        "printk.h": "c"
     }
 }
