@@ -112,6 +112,12 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
                 // 使用原子操作安全地设置 state 变量的 STATE_CONNECTED 位（第一位），设置值为1
                 (void)atomic_set_bit(state, STATE_CONNECTED);
+        
+
+        // === 新增：请求交换 MTU ===
+        // 这会告诉手机：“我支持大包（247字节），我们也用大包通信吧”
+        // 放在这里或者在一个单独的 work 稍微延迟一点调用也可以
+        //bt_gatt_exchange_mtu(conn, NULL);
         }
 }
 
@@ -160,6 +166,7 @@ void consumer_work_handler(struct k_work *work)
                 packet.samples[i].gyro[2]  = (float)sensor_value_to_double(&sample_ptr->gyro[2]);
                 packet.count++;
                 k_free(sample_ptr);
+                printk("free batch of %d samples\n", packet.count);
         }
 
         if (imu_ntf_enabled && packet.count > 0) {
