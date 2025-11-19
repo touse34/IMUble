@@ -1,3 +1,4 @@
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/sensor.h>
@@ -45,6 +46,27 @@ BT_GATT_SERVICE_DEFINE(imu_svc,
 
 
 
+/* ===================== BLE 广播参数 ===================== */
+
+#define DEVICE_NAME       "IMU-Board"
+#define DEVICE_NAME_LEN   (sizeof(DEVICE_NAME) - 1)
+
+/* 广播数据：通用发现 + 不支持 BR/EDR + 完整设备名 */
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+/* 广播参数：可连接、低速广播 */
+static const struct bt_le_adv_param adv_param =
+    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE,
+                         BT_GAP_ADV_SLOW_INT_MIN,
+                         BT_GAP_ADV_SLOW_INT_MAX,
+                         NULL);
+
+
+
+
 // ========== 线程定义和全局变量 ==========
 #define SAMPLE_FREQUENCY 104    // 传感器采样频率 (Hz)
 #define CONSUMER_RATE_MS 50     // 消费者 (发送) 频率 (ms) -> 20 Hz
@@ -72,7 +94,8 @@ static K_WORK_DELAYABLE_DEFINE(producer_work, consumer_work_handler);
 
 
 
-// 从 k_fifo 中取出所有样本，打包、发送
+/* ===================== 消费者：从 FIFO 取数据并通过 BLE 发出去 ===================== */
+
 void consumer_work_handler(struct k_work *work)
 {
     struct imu_sample *sample_ptr;
@@ -86,12 +109,13 @@ void consumer_work_handler(struct k_work *work)
         samples_count++;
         
         // 在这里进行数据打包/复制到发送缓冲区
-        printf("[Consumer] 样本 %d: Accel X=%.2f m/s², Gyro Z=%.2f °/s\n", samples_count,
-               sensor_value_to_double(&sample_ptr->accel[0]),
-               sensor_value_to_double(&sample_ptr->gyro[2]));
+        printf("[Consumer] 样本 %d: Accel X=%.2f m/s², Gyro Z=%.2f °/s\n", 
+                samples_count,
+                sensor_value_to_double(&sample_ptr->accel[0]),
+                sensor_value_to_double(&sample_ptr->gyro[2]));
 
                
-               /* --- 新增：把 accel 三轴打包成 3 个 float（12 字节） --- */
+        /* --- 新增：把 accel 三轴打包成 3 个 float（12 字节） --- */
         float ax = (float)sensor_value_to_double(&sample_ptr->accel[0]);
         float ay = (float)sensor_value_to_double(&sample_ptr->accel[1]);
         float az = (float)sensor_value_to_double(&sample_ptr->accel[2]);
@@ -101,8 +125,11 @@ void consumer_work_handler(struct k_work *work)
         memcpy(&imu_notify_data[8], &az, sizeof(float));
 
         /* 通过 GATT Notify 发出去（属性索引 1 对应上面特征） */
-        bt_gatt_notify(NULL, &imu_svc.attrs[1], imu_notify_data, sizeof(imu_notify_data));
-
+        int err = bt_gatt_notify(NULL, &imu_svc.attrs[1],
+                                 imu_notify_data, sizeof(imu_notify_data));
+        if (err) {
+            printk("[BT] Notify failed (err %d)\n", err);
+        }
 
         // 释放内存
         k_free(sample_ptr);
@@ -121,7 +148,8 @@ void consumer_work_handler(struct k_work *work)
 }
 
 
-// 生产者：传感器触发器回调函数 (104 Hz)
+/* ===================== 生产者：传感器触发器回调 ===================== */
+
 static void sensor_trigger_handler(const struct device *dev,
                                  const struct sensor_trigger *trigger)
 {
@@ -189,7 +217,8 @@ int main()
         printk("[BT] Bluetooth enable failed (err %d)\n", err);
     }
 
-
+    
+    /* 2. 初始化 IMU 传感器 */
     if (!device_is_ready(sensor)) {
         printf("[Main] 错误: IMU传感器未就绪\n");
         return 0;
@@ -219,7 +248,6 @@ int main()
         return 0;
     }
     printf("[Main] 陀螺仪采样频率设置为 104 Hz\n");
-    /* --- 新增代码结束 --- */
     
     /* --- 配置和启用传感器触发器 (生产者) --- */
     struct sensor_trigger trig = {
