@@ -169,7 +169,9 @@ static void bt_ready(int err)
     /* 开始广播，允许连接，并带上设备名 */
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, NULL, 0, NULL, 0);
     if (err) {
-        printk("[BT] Advertising failed to start (err %d)\n", err);
+        printk("[BT] Advertising failed to start (err %d)\n", err);  // 打印广告启动错误
+    } else {
+        printk("[BT] Advertising started successfully\n");
     }
 }
 
